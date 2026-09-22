@@ -1,7 +1,7 @@
 {
-  "name": "@printer-mvp/job-store-turso",
+  "name": "@printer-mvp/job-store-sqlite",
   "version": "1.0.0",
-  "description": "Turso / libSQL embedded replica JobStore implementation",
+  "description": "Local SQLite JobStore implementation for Node.js",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -9,7 +9,6 @@
     "test": "jest"
   },
   "dependencies": {
-    "@libsql/client": "^0.14.0",
     "@printer-mvp/print-core": "^1.0.0"
   },
   "devDependencies": {

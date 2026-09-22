@@ -8,7 +8,7 @@ import {
   Logger,
   PrintJob
 } from '@printer-mvp/print-core';
-import { TursoJobStore } from '@printer-mvp/job-store-turso';
+import { SqliteJobStore } from '@printer-mvp/job-store-sqlite';
 import { DesktopBluetoothConnection } from './bluetooth-connection';
 
 // Configure Pino structured logger to write to disk
@@ -26,22 +26,15 @@ const domainLogger: Logger = {
 let mainWindow: BrowserWindow | null = null;
 let queueService: PrintQueueService;
 let stateMachine: ConnectionStateMachine;
-let jobStore: TursoJobStore;
+let jobStore: SqliteJobStore;
 let bluetoothConnection: DesktopBluetoothConnection;
 
 async function initializeServices() {
   domainLogger.info('Initializing desktop printer services...');
 
-  // Initialize Turso embedded replica store
+  // Initialize plain local SQLite store (better-sqlite3)
   const dbPath = path.join(app.getPath('userData'), 'local-print-jobs.db');
-  jobStore = new TursoJobStore({
-    localDbUrl: `file:${dbPath}`,
-    syncUrl: process.env.TURSO_DATABASE_URL,
-    authToken: process.env.TURSO_AUTH_TOKEN,
-    syncInterval: 60,
-    logger: domainLogger
-  });
-  await jobStore.init();
+  jobStore = new SqliteJobStore(dbPath);
 
   // Initialize hardware connection adapter
   bluetoothConnection = new DesktopBluetoothConnection({
@@ -146,7 +139,7 @@ ipcMain.handle('printer:print', async (_, payload: string) => {
 ipcMain.handle('printer:get-jobs', async () => {
   if (!jobStore) return [];
   const all = await jobStore.getAll();
-  return all.filter((j) => j.deviceId === 'desktop').slice(0, 10);
+  return all.filter((j: PrintJob) => j.deviceId === 'desktop').slice(0, 10);
 });
 
 app.whenReady().then(async () => {

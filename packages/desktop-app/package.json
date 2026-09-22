@@ -12,7 +12,7 @@
     "dev:web": "vite --config vite.config.ts --port 3000 --host --force"
   },
   "dependencies": {
-    "@printer-mvp/job-store-turso": "^1.0.0",
+    "@printer-mvp/job-store-sqlite": "^1.0.0",
     "@printer-mvp/print-core": "^1.0.0",
     "lucide-react": "^0.468.0",
     "pino": "^9.6.0",
