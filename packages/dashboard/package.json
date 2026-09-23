@@ -5,7 +5,7 @@
   "description": "Next.js Fleet Monitor Dashboard for Bluetooth Receipt Printer MVP",
   "scripts": {
     "dev": "next dev",
-    "build": "npm --prefix ../print-core run build && next build",
+    "build": "cd ../print-core && npm run build && cd ../dashboard && next build",
     "start": "next start",
     "lint": "next lint"
   },

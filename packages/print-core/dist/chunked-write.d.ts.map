@@ -1,0 +1,1 @@
+{"version":3,"file":"chunked-write.d.ts","sourceRoot":"","sources":["../src/chunked-write.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,iBAAiB,EAAE,MAAM,SAAS,CAAC;AAE5C,MAAM,WAAW,mBAAmB;IAClC,SAAS,CAAC,EAAE,MAAM,CAAC;IACnB,OAAO,CAAC,EAAE,MAAM,CAAC;CAClB;AAED,wBAAsB,YAAY,CAChC,UAAU,EAAE,iBAAiB,EAC7B,IAAI,EAAE,UAAU,EAChB,OAAO,GAAE,mBAAwB,GAChC,OAAO,CAAC,IAAI,CAAC,CAmBf"}

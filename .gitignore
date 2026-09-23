@@ -1,5 +1,6 @@
 node_modules/
 dist/
+!packages/print-core/dist/
 build/
 *.db
 *.db-journal
