@@ -1,5 +1,10 @@
 {
-  "buildCommand": "npm install && npm run build --workspace=packages/print-core && npm run build --workspace=packages/dashboard",
+  "buildCommand": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install && npm run build --workspace=packages/print-core && npm run build --workspace=packages/dashboard",
   "outputDirectory": "packages/dashboard/.next",
-  "installCommand": "npm install"
+  "installCommand": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install",
+  "build": {
+    "env": {
+      "ELECTRON_SKIP_BINARY_DOWNLOAD": "1"
+    }
+  }
 }
