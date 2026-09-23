@@ -1,5 +1,0 @@
-{
-  "buildCommand": "npm install && npm run build --workspace=packages/print-core && npm run build --workspace=packages/dashboard",
-  "outputDirectory": "packages/dashboard/.next",
-  "installCommand": "npm install"
-}
