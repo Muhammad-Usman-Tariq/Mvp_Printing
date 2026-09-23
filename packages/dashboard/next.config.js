@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
-  transpilePackages: ['@printer-mvp/print-core']
+  reactStrictMode: true
 };
 
 module.exports = nextConfig;
