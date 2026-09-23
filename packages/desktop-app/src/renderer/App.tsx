@@ -1,298 +1,322 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Printer,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Bluetooth,
-  ChevronDown,
-  ChevronUp
+  Smartphone,
+  Laptop,
+  Monitor,
+  LayoutGrid,
+  Bluetooth
 } from 'lucide-react';
-import { PrintJob, toFriendlyErrorMessage } from '@printer-mvp/print-core';
+import {
+  ConnectionStateMachine,
+  PrintQueueService,
+  PrintJob,
+  ConnectionState,
+  Logger
+} from '@printer-mvp/print-core';
+import {
+  WebSimulatedPrinterConnection,
+  LocalStorageJobStore,
+  PrintedReceipt
+} from './services/printer-runtime';
+import { MobileApp } from './components/MobileApp';
+import { DesktopApp } from './components/DesktopApp';
+import { DashboardApp } from './components/DashboardApp';
+import { ThermalPrinterHardware } from './components/ThermalPrinterHardware';
 
 export const App: React.FC = () => {
-  const [connectionState, setConnectionState] = useState<string>('DISCONNECTED');
-  const [printValue, setPrintValue] = useState<string>('');
-  const [isBusy, setIsBusy] = useState<boolean>(false);
-  const [feedback, setFeedback] = useState<{ type: 'printing' | 'success' | 'error'; message: string } | null>(null);
-  const [recentJobs, setRecentJobs] = useState<PrintJob[]>([]);
-  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<'mobile' | 'desktop' | 'dashboard'>('mobile');
+  const [connectionState, setConnectionState] = useState<ConnectionState>('DISCONNECTED');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [jobs, setJobs] = useState<PrintJob[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [printedReceipts, setPrintedReceipts] = useState<PrintedReceipt[]>([]);
+  const [lastSyncTime, setLastSyncTime] = useState<number | null>(Date.now() - 25000);
 
-  // Load state and subscribe on mount
+  // References for singleton runtime
+  const connectionRef = useRef<WebSimulatedPrinterConnection | null>(null);
+  const stateMachineRef = useRef<ConnectionStateMachine | null>(null);
+  const storeRef = useRef<LocalStorageJobStore | null>(null);
+  const queueServiceRef = useRef<PrintQueueService | null>(null);
+
+  // Initialize service on mount
   useEffect(() => {
-    if (window.printerAPI) {
-      window.printerAPI.getState().then((st) => {
-        setConnectionState(st);
-        if (st === 'DISCONNECTED') {
-          window.printerAPI.connect().then(() => {
-            window.printerAPI.getState().then(setConnectionState);
-          }).catch(() => {});
+    const conn = new WebSimulatedPrinterConnection();
+    connectionRef.current = conn;
+
+    const logger: Logger = {
+      info: (msg, meta) => {
+        const line = `[INFO] ${new Date().toLocaleTimeString()} - ${msg} ${meta ? JSON.stringify(meta) : ''}`;
+        setLogs((prev) => [line, ...prev.slice(0, 40)]);
+      },
+      warn: (msg, meta) => {
+        const line = `[WARN] ${new Date().toLocaleTimeString()} - ${msg} ${meta ? JSON.stringify(meta) : ''}`;
+        setLogs((prev) => [line, ...prev.slice(0, 40)]);
+      },
+      error: (msg, meta) => {
+        const line = `[ERROR] ${new Date().toLocaleTimeString()} - ${msg} ${meta ? JSON.stringify(meta) : ''}`;
+        setLogs((prev) => [line, ...prev.slice(0, 40)]);
+      },
+      debug: () => {}
+    };
+
+    const sm = new ConnectionStateMachine(conn, logger);
+    stateMachineRef.current = sm;
+
+    sm.onTransition((event) => {
+      setConnectionState(event.to);
+    });
+
+    const store = new LocalStorageJobStore();
+    storeRef.current = store;
+
+    // Buffer raw bytes per job so chunked writes produce exactly ONE receipt output
+    const rawJobBytes: number[] = [];
+
+    conn.onRawWrite = (bytes: Uint8Array) => {
+      for (let i = 0; i < bytes.length; i++) {
+        rawJobBytes.push(bytes[i]);
+      }
+    };
+
+    const qs = new PrintQueueService(
+      conn,
+      sm,
+      store,
+      {
+        maxAttempts: 3,
+        baseBackoffMs: 500,
+        maxBackoffMs: 3000,
+        writeTimeoutMs: 5000,
+        onJobStatusChange: async () => {
+          const loaded = await store.getAll();
+          setJobs([...loaded]);
+        },
+        onJobComplete: async (completedJob) => {
+          const loaded = await store.getAll();
+          setJobs([...loaded]);
+
+          if (completedJob.status === 'sent') {
+            let printable = '';
+            if (rawJobBytes.length > 0) {
+              const decoded = new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(rawJobBytes));
+              printable = decoded.replace(/[\x1b\x1d\x40\x56\x41\x00]/g, '').trim();
+            }
+            if (!printable) {
+              printable = completedJob.payload.trim();
+            }
+
+            const receipt: PrintedReceipt = {
+              id: 'rcpt-' + completedJob.id,
+              jobId: completedJob.id,
+              deviceId: completedJob.deviceId,
+              rawText: printable,
+              timestamp: completedJob.updatedAt || Date.now()
+            };
+            setPrintedReceipts((prev) => [receipt, ...prev]);
+          }
+          rawJobBytes.length = 0;
         }
-      });
-      window.printerAPI.getRecentJobs().then(setRecentJobs);
+      },
+      logger
+    );
+    queueServiceRef.current = qs;
 
-      const unsubState = window.printerAPI.onStateChanged((state) => {
-        setConnectionState(state);
-      });
+    // Load initial jobs
+    store.getAll().then((loaded) => setJobs(loaded));
 
-      const unsubJob = window.printerAPI.onJobStatusChanged((job) => {
-        // Refresh job list
-        window.printerAPI.getRecentJobs().then(setRecentJobs);
+    // Call resumeIncomplete() on startup per acceptance criteria
+    qs.resumeIncomplete();
 
-        if (job.status === 'sending') {
-          setIsBusy(true);
-          setFeedback({ type: 'printing', message: 'Printing…' });
-        } else if (job.status === 'sent') {
-          setIsBusy(false);
-          setFeedback({ type: 'success', message: 'Printed' });
-          setPrintValue('');
-          setTimeout(() => setFeedback((prev) => (prev?.type === 'success' ? null : prev)), 4000);
-        } else if (job.status === 'failed') {
-          setIsBusy(false);
-          const friendly = toFriendlyErrorMessage(job.lastErrorType, true);
-          setFeedback({ type: 'error', message: friendly });
-        }
-      });
+    // Auto connect by default
+    conn.connect().then(() => sm.transitionTo('CONNECTED', 'Auto-paired on startup'));
 
-      return () => {
-        unsubState();
-        unsubJob();
-      };
-    }
+    return () => {
+      conn.disconnect().catch(() => {});
+    };
   }, []);
 
-  const handleConnectToggle = async () => {
-    if (!window.printerAPI) return;
-    if (connectionState === 'CONNECTED') {
-      await window.printerAPI.disconnect();
-    } else {
-      await window.printerAPI.connect();
+  const refreshJobs = async () => {
+    if (storeRef.current) {
+      const all = await storeRef.current.getAll();
+      setJobs([...all]);
     }
   };
 
-  const handlePrint = async () => {
-    if (!printValue.trim() || isBusy || !window.printerAPI) return;
-
-    setIsBusy(true);
-    setFeedback({ type: 'printing', message: 'Printing…' });
-
+  const handleConnect = async () => {
+    if (!connectionRef.current || !stateMachineRef.current) return;
+    setIsConnecting(true);
     try {
-      await window.printerAPI.print(printValue);
+      await stateMachineRef.current.transitionTo('CONNECTING', 'User initiated pairing');
+      await connectionRef.current.connect();
+      await stateMachineRef.current.transitionTo('CONNECTED', 'Bluetooth paired');
     } catch (err) {
-      setIsBusy(false);
-      setFeedback({ type: 'error', message: "Couldn't print — try again" });
+      await stateMachineRef.current.transitionTo('DISCONNECTED', String(err));
+    } finally {
+      setIsConnecting(false);
     }
   };
 
-  // Plain-language connection label
-  const getFriendlyConnectionText = () => {
-    switch (connectionState) {
-      case 'CONNECTED':
-        return { text: 'Connected', color: '#10B981', dot: '#10B981' };
-      case 'CONNECTING':
-        return { text: 'Connecting…', color: '#F59E0B', dot: '#F59E0B' };
-      case 'RECONNECTING':
-        return { text: 'Reconnecting…', color: '#F59E0B', dot: '#F59E0B' };
-      case 'PRINTING':
-        return { text: 'Printing…', color: '#4F46E5', dot: '#4F46E5' };
-      default:
-        return { text: 'Not connected', color: '#6B7280', dot: '#9CA3AF' };
-    }
-  };
-
-  const connInfo = getFriendlyConnectionText();
-
-  // Plain-language status pill
-  const renderStatusPill = (status: PrintJob['status']) => {
-    switch (status) {
-      case 'sent':
-        return (
-          <span style={{ backgroundColor: '#DEF7EC', color: '#03543F', padding: '3px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600 }}>
-            Printed
-          </span>
-        );
-      case 'sending':
-        return (
-          <span style={{ backgroundColor: '#EEF2FF', color: '#4F46E5', padding: '3px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-            <Loader2 size={10} className="animate-spin" /> Printing…
-          </span>
-        );
-      case 'failed':
-        return (
-          <span style={{ backgroundColor: '#FDE8E8', color: '#9B1C1C', padding: '3px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600 }}>
-            Failed
-          </span>
-        );
-      default:
-        return (
-          <span style={{ backgroundColor: '#F3F4F6', color: '#4B5563', padding: '3px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600 }}>
-            Queued
-          </span>
-        );
-    }
+  const handleDisconnect = async () => {
+    if (!connectionRef.current || !stateMachineRef.current) return;
+    await connectionRef.current.disconnect();
+    await stateMachineRef.current.transitionTo('DISCONNECTED', 'User disconnected');
   };
 
   return (
-    <div style={{ padding: '24px', maxWidth: '580px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Connection Status Card */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid #E5E7EB' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: connInfo.dot }} />
-          <span style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
-            Printer: <span style={{ color: connInfo.color }}>{connInfo.text}</span>
-          </span>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: '#0A0E1A', color: '#F8FAFC' }}>
+      {/* Top Header / View Switcher */}
+      <header style={{ padding: '16px 28px', backgroundColor: '#0F172A', borderBottom: '1px solid #1E293B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ width: '36px', height: '36px', borderRadius: '10px', backgroundColor: '#4F46E5', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', boxShadow: '0 0 15px rgba(79, 70, 229, 0.5)' }}>
+            <Bluetooth size={22} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h1 style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '-0.3px' }}>
+                Bluetooth Receipt Printer MVP
+              </h1>
+              <span style={{ fontSize: '11px', fontWeight: 700, backgroundColor: '#1E293B', color: '#818CF8', padding: '2px 8px', borderRadius: '6px', border: '1px solid #334155' }}>
+                ESC/POS Monorepo
+              </span>
+            </div>
+            <p style={{ fontSize: '12px', color: '#64748B' }}>
+              Local SQLite Queue • Shared print-core • Electron + React Native + Next.js
+            </p>
+          </div>
         </div>
 
-        <button
-          onClick={handleConnectToggle}
-          style={{
-            backgroundColor: connectionState === 'CONNECTED' ? '#F3F4F6' : '#4F46E5',
-            color: connectionState === 'CONNECTED' ? '#374151' : '#FFFFFF',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '8px 16px',
-            fontSize: '13px',
-            fontWeight: 600,
-            cursor: 'pointer'
-          }}
-        >
-          {connectionState === 'CONNECTED' ? 'Disconnect' : 'Connect'}
-        </button>
-      </div>
-
-      {/* Main Print Card */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', border: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <div>
-          <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151', display: 'block', marginBottom: '8px' }}>
-            Text to print
-          </label>
-          <textarea
-            value={printValue}
-            onChange={(e) => setPrintValue(e.target.value)}
-            placeholder="Type value to print…"
-            rows={5}
+        {/* View Switcher Tabs: Mobile App / Desktop App / Dashboard */}
+        <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#020617', padding: '4px', borderRadius: '12px', border: '1px solid #1E293B' }}>
+          <button
+            onClick={() => setActiveView('mobile')}
             style={{
-              width: '100%',
-              padding: '12px 14px',
-              borderRadius: '12px',
-              border: '1px solid #D1D5DB',
-              fontSize: '14px',
-              color: '#111827',
-              resize: 'vertical',
-              outline: 'none',
-              fontFamily: 'inherit'
-            }}
-          />
-        </div>
-
-        <button
-          onClick={handlePrint}
-          disabled={isBusy || !printValue.trim()}
-          style={{
-            backgroundColor: isBusy || !printValue.trim() ? '#A5B4FC' : '#4F46E5',
-            color: '#FFFFFF',
-            borderRadius: '12px',
-            padding: '14px',
-            fontSize: '15px',
-            fontWeight: 700,
-            border: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            cursor: isBusy || !printValue.trim() ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {isBusy ? (
-            <>
-              <Loader2 size={18} className="animate-spin" /> Printing…
-            </>
-          ) : (
-            <>
-              <Printer size={18} /> Print Now
-            </>
-          )}
-        </button>
-
-        {/* Result Feedback Directly Under Button */}
-        {feedback && (
-          <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: '10px',
-              fontSize: '13px',
-              fontWeight: 600,
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              backgroundColor: feedback.type === 'success' ? '#DEF7EC' : feedback.type === 'error' ? '#FDE8E8' : '#EEF2FF',
-              color: feedback.type === 'success' ? '#03543F' : feedback.type === 'error' ? '#9B1C1C' : '#4F46E5'
+              gap: '6px',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: activeView === 'mobile' ? '#4F46E5' : 'transparent',
+              color: activeView === 'mobile' ? '#FFFFFF' : '#94A3B8'
             }}
           >
-            {feedback.type === 'success' && <CheckCircle2 size={16} />}
-            {feedback.type === 'error' && <AlertCircle size={16} />}
-            {feedback.type === 'printing' && <Loader2 size={16} className="animate-spin" />}
-            <span>{feedback.message}</span>
+            <Smartphone size={15} /> Mobile App
+          </button>
+
+          <button
+            onClick={() => setActiveView('desktop')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: activeView === 'desktop' ? '#4F46E5' : 'transparent',
+              color: activeView === 'desktop' ? '#FFFFFF' : '#94A3B8'
+            }}
+          >
+            <Laptop size={15} /> Desktop App
+          </button>
+
+          <button
+            onClick={() => setActiveView('dashboard')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: activeView === 'dashboard' ? '#4F46E5' : 'transparent',
+              color: activeView === 'dashboard' ? '#FFFFFF' : '#94A3B8'
+            }}
+          >
+            <Monitor size={15} /> Dashboard
+          </button>
+        </div>
+      </header>
+
+      {/* Main Container Area */}
+      <main style={{ flex: 1, padding: '28px', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowX: 'auto' }}>
+        {/* Tab 1: Mobile App + Thermal Printer Simulator */}
+        {activeView === 'mobile' && queueServiceRef.current && (
+          <div style={{ display: 'flex', gap: '32px', alignItems: 'flex-start', justifyContent: 'center' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: '#818CF8', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <Smartphone size={14} /> React Native Mobile App (Design System)
+              </div>
+              <MobileApp
+                queueService={queueServiceRef.current}
+                connectionState={connectionState}
+                jobs={jobs}
+                onConnect={handleConnect}
+                onDisconnect={handleDisconnect}
+                isConnecting={isConnecting}
+                lastSyncTime={lastSyncTime}
+                onRefreshJobs={refreshJobs}
+              />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: '#34D399', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <Bluetooth size={14} /> Live Thermal Hardware Simulator
+              </div>
+              <ThermalPrinterHardware
+                connectionState={connectionState}
+                printedReceipts={printedReceipts}
+              />
+            </div>
           </div>
         )}
-      </div>
 
-      {/* Recent Jobs Card */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', border: '1px solid #E5E7EB' }}>
-        <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#111827', marginBottom: '14px' }}>
-          Recent prints
-        </h3>
-
-        {recentJobs.length === 0 ? (
-          <div style={{ fontSize: '13px', color: '#9CA3AF', padding: '16px 0', textAlign: 'center' }}>
-            No recent prints yet
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {recentJobs.map((job) => {
-              const isFailed = job.status === 'failed';
-              const isExpanded = expandedJobId === job.id;
-
-              return (
-                <div
-                  key={job.id}
-                  onClick={() => isFailed && setExpandedJobId(isExpanded ? null : job.id)}
-                  style={{
-                    padding: '12px 14px',
-                    borderRadius: '10px',
-                    backgroundColor: '#F9FAFB',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '6px',
-                    cursor: isFailed ? 'pointer' : 'default'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#111827', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {job.payload.split('\n')[0] || '(empty)'}
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {renderStatusPill(job.status)}
-                      {isFailed && (isExpanded ? <ChevronUp size={14} color="#9CA3AF" /> : <ChevronDown size={14} color="#9CA3AF" />)}
-                    </div>
-                  </div>
-
-                  <div style={{ fontSize: '11px', color: '#9CA3AF' }}>
-                    {new Date(job.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-
-                  {/* Tapping a failed job shows one plain-language line */}
-                  {isFailed && isExpanded && (
-                    <div style={{ fontSize: '12px', color: '#B91C1C', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed #FECACA' }}>
-                      {toFriendlyErrorMessage(job.lastErrorType, true)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+        {/* Tab 2: Desktop App + Thermal Printer Simulator */}
+        {activeView === 'desktop' && queueServiceRef.current && (
+          <div style={{ display: 'flex', gap: '32px', alignItems: 'flex-start', justifyContent: 'center' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: '#38BDF8', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <Laptop size={14} /> Electron Desktop App (Utilitarian UI)
+              </div>
+              <DesktopApp
+                queueService={queueServiceRef.current}
+                connectionState={connectionState}
+                jobs={jobs}
+                onConnect={handleConnect}
+                onDisconnect={handleDisconnect}
+                onRefreshJobs={refreshJobs}
+              />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: '#34D399', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <Bluetooth size={14} /> Live Thermal Hardware Simulator
+              </div>
+              <ThermalPrinterHardware
+                connectionState={connectionState}
+                printedReceipts={printedReceipts}
+              />
+            </div>
           </div>
         )}
-      </div>
+
+        {/* Tab 3: Dashboard */}
+        {activeView === 'dashboard' && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+            <DashboardApp
+              jobs={jobs}
+              onRefresh={refreshJobs}
+              lastSyncTime={lastSyncTime}
+            />
+          </div>
+        )}
+      </main>
     </div>
   );
 };
