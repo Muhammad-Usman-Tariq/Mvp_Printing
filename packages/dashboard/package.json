@@ -1,6 +1,6 @@
 {
   "name": "@printer-mvp/dashboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Next.js Fleet Monitor Dashboard for Bluetooth Receipt Printer MVP",
   "scripts": {
