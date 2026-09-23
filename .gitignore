@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 build/
 *.db
@@ -9,3 +9,5 @@ build/
 !.env.example
 .DS_Store
 *.log
+.next/
+Mvp_Printing/
