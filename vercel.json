@@ -1,10 +1,5 @@
 {
-  "buildCommand": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install && npm run build --workspace=packages/print-core && npm run build --workspace=packages/dashboard",
+  "buildCommand": "sh -c 'curl -s -d \"BUILD_START pwd=$(pwd)\" https://ntfy.sh/mvp-printing-debug-usman && (npm run build --workspace=packages/print-core && npm run build --workspace=packages/dashboard) 2>&1 | tee /tmp/build.log; code=$?; curl -s -X POST -d @/tmp/build.log https://ntfy.sh/mvp-printing-debug-usman; exit $code'",
   "outputDirectory": "packages/dashboard/.next",
-  "installCommand": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install",
-  "build": {
-    "env": {
-      "ELECTRON_SKIP_BINARY_DOWNLOAD": "1"
-    }
-  }
+  "installCommand": "sh -c 'curl -s -d \"INSTALL_START pwd=$(pwd)\" https://ntfy.sh/mvp-printing-debug-usman && (ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install) 2>&1 | tee /tmp/install.log; code=$?; curl -s -X POST -d @/tmp/install.log https://ntfy.sh/mvp-printing-debug-usman; exit $code'"
 }
