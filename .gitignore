@@ -5,10 +5,9 @@ build/
 *.db
 *.db-journal
 *.sqlite
-.env
-.env.*
 !.env.example
 .DS_Store
 *.log
 .next/
 Mvp_Printing/
+config.bat

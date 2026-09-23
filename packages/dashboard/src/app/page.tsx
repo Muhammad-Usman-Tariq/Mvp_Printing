@@ -15,7 +15,7 @@ import {
   Database,
   AlertCircle
 } from 'lucide-react';
-import type { PrintJob } from '@printer-mvp/print-core';
+import type { PrintJob } from '../types/job';
 
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<PrintJob[]>([]);
